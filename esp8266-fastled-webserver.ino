@@ -36,6 +36,7 @@ extern "C" {
 #include <EEPROM.h>
 //#include <IRremoteESP8266.h>
 #include "GradientPalettes.h"
+#include <ArduinoOTA.h>
 
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
 
@@ -50,7 +51,12 @@ ESP8266WebServer webServer(80);
 //WebSocketsServer webSocketsServer = WebSocketsServer(81);
 ESP8266HTTPUpdateServer httpUpdateServer;
 
+bool ota_flag = false;
+long ota_enabled_to = 15000;
+
 #include "FSBrowser.h"
+
+#define OTA_NAME      "My-LED"
 
 #define DATA_PIN      D5
 #define LED_TYPE      WS2811
@@ -300,6 +306,35 @@ void setup() {
 
   httpUpdateServer.setup(&webServer);
 
+  // Hostname defaults to esp8266-[ChipID]
+  ArduinoOTA.setHostname(OTA_NAME);
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+
+  webServer.on("/ota", HTTP_GET, []() {
+    webServer.send(200, "text/html", redirect(15, "OTA enabled for 15 seconds"));
+    ota_enabled_to = millis() + 15000;
+    Serial.println(ota_enabled_to);
+    delay(100);
+    ota_flag = true;
+  });
+
   webServer.on("/all", HTTP_GET, []() {
     String json = getFieldsJson(fields, fieldCount);
     webServer.send(200, "text/json", json);
@@ -463,6 +498,10 @@ void broadcastString(String name, String value)
   //  webSocketsServer.broadcastTXT(json);
 }
 
+String redirect(int seconds, String content) {
+  return "<html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"X-UA-Compatible\" content=\"ie=edge\"><meta name=\"mobile-web-app-capable\" content=\"yes\"><title>OK</title></head><body><div style=\"font-family:sans-serif\"><div style=\"margin:1em;color:#333;font-size:5vw\">"+content+"</div><div id=\"redirectString\" style=\"margin:1em;color:#999;font-size:2vw\">Redirecting in <span id=\"counter\"></span> seconds</div></div></body><script>var timer="+String(seconds)+";if(0==timer)document.getElementById(\"redirectString\").hidden=!0,history.go(-1);else{var t=document.getElementById(\"counter\");t.innerHTML=timer,setInterval(function(){t.innerHTML=--timer,timer<1&&history.go(-1)},1e3)}</script></html>";
+}
+
 void loop() {
   // Add entropy to random number generator; we use a lot of it.
   random16_add_entropy(random(65535));
@@ -514,6 +553,19 @@ void loop() {
     adjustPattern(true);
     autoPlayTimeout = millis() + (autoplayDuration * 1000);
   }
+
+  if (ota_flag) {
+    Serial.println("OTA started");
+    digitalWrite(BUILTIN_LED, 0);
+    while (millis() < ota_enabled_to) {
+      ArduinoOTA.handle();
+      delay(10);
+    }
+    digitalWrite(BUILTIN_LED, 1);
+    ota_flag = false;
+    Serial.println("OTA ended");
+  }
+
 
   // Call the current pattern function once, updating the 'leds' array
   patterns[currentPatternIndex].pattern();
